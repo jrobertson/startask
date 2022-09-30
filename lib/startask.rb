@@ -6,17 +6,35 @@
 require 'kvx'
 require 'rxfhelper'
 
+module RecordHelper
+  
+  def generate_id()
+    Time.now.to_f.to_s.sub('.','-')
+  end
+  
+  def logit(label)
+    @log << [label, Time.now.strftime("%H:%M%P")]    
+    @log.last
+  end
+  
+end
+
 class ActionItem
+  include RecordHelper
 
-  attr_reader :log
+  attr_reader :log, :id
 
-  def initialize(s)
+  def initialize(s, callback=nil)
+    
+    @id = generate_id()
     @title = s
     @log = []
+    @callback = callback
+    
   end
   
   def done()
-    logit :completed
+    logaction :completed
   end
   
   alias completed done
@@ -26,15 +44,15 @@ class ActionItem
   end
   
   def started()
-    logit :started
+    logaction :started
   end
   
   def status()
-    @log.last
+    @log.last ? @log.last : []
   end
   
   def stopped()
-    logit :stopped
+    logaction :stopped
   end
   
   def status=(status)
@@ -48,20 +66,34 @@ class ActionItem
     
   end
   
+  def to_xml()
+    
+    h = {id: @id, status: status().join(' ')}
+    Rexle::Element.new(:action, attributes: h, value: @title)
+    
+  end
+  
   private
   
-  def logit(label)
-    @log << [label, Time.now.strftime("%H:%M%P")]    
+  def logaction(label)    
+    r = logit label
+    @callback.status = r.clone.insert(1, @title) if @callback
   end
 
 end
 
 class Actions
 
+  attr_accessor :status  
+  
+  def initialize(callback=nil)
+    @callback = callback
+  end
+
   def import(a)
 
     @a = a.map do |x|
-      x.is_a?(String) ? ActionItem.new(x) : Actions.new.import(x)
+      x.is_a?(String) ? ActionItem.new(x, @callback) : Actions.new(@callback).import(x)
     end
 
     return self
@@ -75,25 +107,43 @@ class Actions
   def to_s()
     @a.each(&:to_s)
   end
+  
+  def to_xml()
+    
+    Rexle::Element.new( :actions, value: @a.map(&:to_xml).join)
+    #@a.map(&:to_xml)
+  end  
 
 end
 
 class ResultItem
+  include RecordHelper
   
-  def initialize(s)
+  attr_reader :id
+  
+  def initialize(s, callback=nil)
+    @id = generate_id()
     @evidence = s
+    @callback = callback
   end
   
   def to_s()
     @evidence
   end
   
+  def to_xml()
+    
+    h = {id: @id}
+    Rexle::Element.new(:result, attributes: h, value: @evidence)
+    
+  end  
+  
 end
 
 class Results
   
-  def initialize()
-
+  def initialize(callback=nil)
+    @callback = callback
   end
   
   def import(a)
@@ -120,6 +170,17 @@ class Results
       end
     end.join("\n")
   end
+  
+  def to_xml()
+    
+    if @a.length < 2 then      
+      @a[0].to_xml
+    else
+      Rexle::Element.new( :results, value: @a.map(&:to_xml).join)
+    end
+          
+    #@a.map(&:to_xml)
+  end    
   
   def print_row(id, indent: 0)
         
@@ -150,17 +211,21 @@ end
 # started (method) adds a status message to the log
 
 class StarTask
+  include RecordHelper
 
-  attr_reader :situation, :task, :actions, :log, :results
+  attr_reader :situation, :task, :actions, :log, :results, :id
 
   def initialize(src=nil, debug: false)
+    
     @debug = debug
+    @id = generate_id()
     @log = []
+    @status = ''
     import src if src
   end
   
   def done()
-    logit :completed
+    logtask :completed
   end
   
   alias completed done
@@ -179,7 +244,7 @@ class StarTask
        
         rawlabel, body = x.split(/\n/,2)
         
-        [rawlabel.downcase.gsub(/\s+/, '_').to_sym, 
+        [rawlabel.rstrip.downcase.gsub(/\s+/, '_').to_sym, 
          body.strip.gsub(/^(\s*)[\*\+] /,'\1')]
         
       end.to_h
@@ -200,30 +265,50 @@ class StarTask
     kvx = Kvx.new obj
     @situation = kvx.situation
     @task = kvx.task
-    @actions = Actions.new.import(kvx.action[:items])
-    @results = Results.new.import(kvx.result[:items])
+    @actions = Actions.new(self).import(kvx.action[:items])
+    @results = Results.new(self).import(kvx.result[:items])
 
   end
     
   # adds a status message to the log
   #
   def started()
-    logit :started
+    logtask :started
   end
   
   def status()
-    @log.last
+    @status
+  end
+  
+  def status=(s)
+    @status = s
   end
   
   def stopped()
-    logit :stopped
-  end
+    logtask :stopped
+  end  
+    
+  def to_xml()
+    
+    situation = Rexle::Element.new( :situation, value: @situation)
+    task = Rexle::Element.new( :task, value: @task)
+    
+    doc = Rexle.new('<star/>')
+    doc.root.add situation
+    doc.root.add task
+    doc.root.add @actions.to_xml
+    doc.root.add @results.to_xml
+    doc.root.xml pretty: true
+    
+  end  
   
   private
   
-  def logit(label)
-    @log << [label, Time.now.strftime("%H:%M%P")]    
-    return label
+  def logtask(label)
+    
+    r = logit label
+    @status = r
+    
   end
 
 end
