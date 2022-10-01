@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name = 'startask'
-  s.version = '0.1.2'
+  s.version = '0.2.0'
   s.summary = 'An experimental gem representing the STAR technique.'
   s.authors = ['James Robertson']
   s.files = Dir["lib/startask.rb"]

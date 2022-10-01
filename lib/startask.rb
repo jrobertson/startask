@@ -13,7 +13,8 @@ module RecordHelper
   end
   
   def logit(label)
-    @log << [label, Time.now.strftime("%H:%M%P")]    
+    @log << [label, Time.now]
+    #@log << [label, Time.now.strftime("%a, %d %b %Y, %H:%M%P")]        
     @log.last
   end
   
@@ -22,11 +23,11 @@ end
 class ActionItem
   include RecordHelper
 
-  attr_reader :log, :id
+  attr_reader  :id
 
-  def initialize(s, callback=nil)
+  def initialize(s, callback=nil, id: nil)
     
-    @id = generate_id()
+    @id = id || generate_id()
     @title = s
     @log = []
     @callback = callback
@@ -38,6 +39,18 @@ class ActionItem
   end
   
   alias completed done
+  
+  def find(id)
+    return self if id == @id
+  end
+  
+  def log(detail: false)
+    detail ? @log.map {|x| [@id, x[-1], x[0], @title]} : @log
+  end
+  
+  def logupdate(item)
+    @log << item
+  end
 
   def to_s()
     @title
@@ -86,8 +99,15 @@ class Actions
 
   attr_accessor :status  
   
-  def initialize(callback=nil)
+  def initialize(obj=nil, callback=nil)
+    
+    @a = read obj if obj.is_a? Rexle::Recordset
     @callback = callback
+    
+  end
+  
+  def find(id)
+    @a.find {|x| x.find id}
   end
 
   def import(a)
@@ -99,6 +119,10 @@ class Actions
     return self
 
   end
+  
+  def log()
+    @a.flat_map {|x| x.log(detail: true)}
+  end  
 
   def [](i)
     @a[i]
@@ -112,6 +136,23 @@ class Actions
     
     Rexle::Element.new( :actions, value: @a.map(&:to_xml).join)
     #@a.map(&:to_xml)
+  end
+
+  private
+  
+  def read(node)
+    
+    node.map do |e|
+      
+      case e.name.to_sym
+      when :action
+        ActionItem.new(e.text, id: e.attributes[:id])
+      when :actions
+        Actions.new(e.xpath('*'), callback: @callback)
+      end
+      
+    end
+    
   end  
 
 end
@@ -121,8 +162,8 @@ class ResultItem
   
   attr_reader :id
   
-  def initialize(s, callback=nil)
-    @id = generate_id()
+  def initialize(s, callback=nil, id: nil)
+    @id = id || generate_id()
     @evidence = s
     @callback = callback
   end
@@ -142,8 +183,13 @@ end
 
 class Results
   
-  def initialize(callback=nil)
-    @callback = callback
+  def initialize(obj=nil, callback: nil)
+    
+    @a = read obj if obj.is_a? Rexle::Recordset
+    @callback = callback    
+    
+    return self
+    
   end
   
   def import(a)
@@ -173,13 +219,8 @@ class Results
   
   def to_xml()
     
-    if @a.length < 2 then      
-      @a[0].to_xml
-    else
-      Rexle::Element.new( :results, value: @a.map(&:to_xml).join)
-    end
-          
-    #@a.map(&:to_xml)
+    Rexle::Element.new( :results, value: @a.map(&:to_xml).join)
+
   end    
   
   def print_row(id, indent: 0)
@@ -191,6 +232,23 @@ class Results
         x.print_row(i, indent: indent+1)
       end
     end.join("\n")
+  end
+  
+  private
+  
+  def read(node)
+    
+    node.map do |e|
+      
+      case e.name.to_sym
+      when :result
+        ResultItem.new(e.text, id: e.attributes[:id])
+      when :results
+        Results.new(e.xpath('*'), callback: @callback)
+      end
+      
+    end
+    
   end
   
 end
@@ -213,7 +271,7 @@ end
 class StarTask
   include RecordHelper
 
-  attr_reader :situation, :task, :actions, :log, :results, :id
+  attr_reader :situation, :task, :actions, :results, :id
 
   def initialize(src=nil, debug: false)
     
@@ -221,7 +279,8 @@ class StarTask
     @id = generate_id()
     @log = []
     @status = ''
-    import src if src
+    read src if src
+    
   end
   
   def done()
@@ -229,6 +288,16 @@ class StarTask
   end
   
   alias completed done
+  
+  def find(id)
+    
+    if @id == id then
+      return self
+    else
+      @actions.find id
+    end
+    
+  end
 
   def import(raws)
 
@@ -269,6 +338,15 @@ class StarTask
     @results = Results.new(self).import(kvx.result[:items])
 
   end
+  
+  def log(detail: false)
+    #todo
+    detail ? @log.map {|x| [@id, x[-1], x[0]]} : @log
+  end
+  
+  def logupdate(item)
+    @log << item
+  end
     
   # adds a status message to the log
   #
@@ -293,11 +371,28 @@ class StarTask
     situation = Rexle::Element.new( :situation, value: @situation)
     task = Rexle::Element.new( :task, value: @task)
     
-    doc = Rexle.new('<star/>')
+    doc = Rexle.new()
+    doc.add Rexle::Element.new(:star)
+    doc.root.attributes[:id] = @id
     doc.root.add situation
     doc.root.add task
     doc.root.add @actions.to_xml
     doc.root.add @results.to_xml
+    
+    logx = log(detail: true) + @actions.log
+    
+    lognode = Rexle::Element.new(:log)
+    
+    logx.sort_by {|x| x[1]}.reverse.each do |x|
+      
+        attr = {id: x[0], timestamp: x[1]}
+        val = "[%s]" % x[2]
+        val += ' ' + x[3] if x[3]
+        
+        lognode.add Rexle::Element.new( :li, attributes: attr, value: val)
+    end
+    
+    doc.root.add lognode
     doc.root.xml pretty: true
     
   end  
@@ -309,6 +404,38 @@ class StarTask
     r = logit label
     @status = r
     
+  end
+  
+  def read(obj)
+
+    s, _ = RXFHelper.read obj
+    doc = Rexle.new(s)
+    @id = doc.root.attributes[:id]
+    @situation = doc.root.element('situation').text 
+    @task = doc.root.element('task').text        
+    actions = doc.root.xpath('actions/*')
+    @actions = Actions.new actions
+    results = doc.root.xpath('results/*')
+    @results = Results.new results
+    
+    log = doc.root.xpath('log/*')
+    
+    log.reverse.each do |x|
+      
+      id = x.attributes[:id]
+      found = find id
+      
+      if found then
+        d = Time.parse(x.attributes[:timestamp])        
+        puts 'x.text: ' + x.text.inspect if @debug
+        status = x.text[/^\[([^\]]+)/,1]
+        found.logupdate([status.to_sym, d])
+      end
+      
+      
+    end
+    
+    doc.xml pretty: true
   end
 
 end
